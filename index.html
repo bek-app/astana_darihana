@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="kk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Астана дәріханалары</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    /* Telegram ішінде оның тақырып түстері қолданылады, браузерде — әдепкі мәндер */
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg-active: var(--tg-theme-secondary-bg-color, #f3f4f6);
+    --text: var(--tg-theme-text-color, #1c1c1e);
+    --muted: var(--tg-theme-hint-color, #6b7280);
+    --line: var(--tg-theme-section-separator-color, #e5e7eb);
+    --accent: var(--tg-theme-button-color, #2563eb);
+    --on-accent: var(--tg-theme-button-text-color, #ffffff);
+    --open: #16a34a;
+    --closed: #dc2626;
+    --shadow: 0 2px 12px rgba(0, 0, 0, .18);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 15px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    overflow: hidden;
+  }
+  #map { position: fixed; inset: 0; z-index: 0; }
+  .leaflet-control-zoom { display: none; }
+
+  /* Жоғарғы жолақ: іздеу + сүзгілер */
+  .top {
+    position: fixed; z-index: 1000;
+    top: 0; left: 0; right: 0;
+    padding: calc(10px + env(safe-area-inset-top)) 10px 0;
+    pointer-events: none;
+  }
+  .top > * { pointer-events: auto; }
+  #search {
+    width: 100%; height: 44px; padding: 0 14px;
+    border: 0; border-radius: 12px; outline: none;
+    background: var(--bg); color: var(--text); box-shadow: var(--shadow);
+    font: inherit; font-size: 16px;
+  }
+  .chips { display: flex; gap: 8px; margin-top: 8px; }
+  .chip {
+    height: 34px; padding: 0 14px;
+    border: 0; border-radius: 17px;
+    background: var(--bg); color: var(--text); box-shadow: var(--shadow);
+    font: inherit; font-size: 14px; cursor: pointer;
+  }
+  .chip.on { background: var(--accent); color: var(--on-accent); }
+
+  /* Салынған жол туралы жолақ */
+  .route {
+    margin-top: 8px; padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--bg); box-shadow: var(--shadow);
+  }
+  .route[hidden] { display: none; }
+  .route-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .route-meta { color: var(--muted); font-size: 13px; }
+  .route-actions { display: flex; gap: 6px; margin-top: 8px; }
+  .route-actions > * {
+    display: inline-flex; align-items: center;
+    height: 32px; padding: 0 12px;
+    border: 0; border-radius: 16px;
+    background: var(--bg-active); color: var(--text);
+    font: inherit; font-size: 13px; text-decoration: none; cursor: pointer;
+  }
+  .route-actions .on { background: var(--accent); color: var(--on-accent); }
+  #routeClose { margin-left: auto; }
+
+  /* Төменгі панель: тізім */
+  .panel {
+    position: fixed; z-index: 1000;
+    left: 0; right: 0; bottom: 0;
+    max-height: 45vh;
+    display: flex; flex-direction: column;
+    background: var(--bg); box-shadow: var(--shadow);
+    border-radius: 16px 16px 0 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100%; padding: 12px 16px;
+    border: 0; background: none; color: inherit;
+    font: inherit; font-weight: 600; text-align: left; cursor: pointer;
+  }
+  .panel-head .arrow { color: var(--muted); transition: transform .2s; }
+  .panel.collapsed .arrow { transform: rotate(180deg); }
+  .panel.collapsed .list, .panel.collapsed .credit { display: none; }
+  .status { padding: 0 16px 8px; color: var(--muted); font-size: 13px; }
+  .status:empty { display: none; }
+  .list { overflow-y: auto; -webkit-overflow-scrolling: touch; border-top: 1px solid var(--line); }
+  .item {
+    display: block; width: 100%; padding: 10px 16px;
+    border: 0; border-bottom: 1px solid var(--line);
+    background: none; color: inherit;
+    font: inherit; text-align: left; cursor: pointer;
+  }
+  .item:active { background: var(--bg-active); }
+  .item .row { display: flex; justify-content: space-between; gap: 8px; }
+  .item .name { font-weight: 600; }
+  .item .dist { color: var(--accent); white-space: nowrap; font-size: 13px; }
+  .item .sub { color: var(--muted); font-size: 13px; }
+  .item .sub.open { color: var(--open); }
+  .item .sub.closed { color: var(--closed); }
+  .empty { padding: 20px 16px; color: var(--muted); text-align: center; }
+  .credit { padding: 6px 16px; color: var(--muted); font-size: 11px; }
+  .credit a { color: inherit; }
+
+  .place-label { font-weight: 600; font-size: 13px; }
+
+  /* Таңдалған дәріхана туралы панель: телефонда төменнен, кең экранда оң жақтан шығады */
+  .info {
+    position: fixed; z-index: 1001;
+    left: 0; right: 0; bottom: 0;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+    border-radius: 16px 16px 0 0;
+    background: var(--bg); color: var(--text); box-shadow: var(--shadow);
+    transform: translateY(100%); visibility: hidden;
+    transition: transform .2s, visibility .2s;
+  }
+  .info.show { transform: none; visibility: visible; }
+  .info-close {
+    position: absolute; top: 10px; right: 10px;
+    width: 32px; height: 32px;
+    border: 0; border-radius: 50%;
+    background: var(--bg-active); color: var(--text);
+    font: inherit; cursor: pointer;
+  }
+  .card { font-size: 14px; }
+  .card h3 { margin: 0 40px 8px 0; font-size: 18px; }
+  .card p { margin: 4px 0; color: var(--muted); }
+  .card p.open { color: var(--open); font-weight: 600; }
+  .card p.closed { color: var(--closed); font-weight: 600; }
+  .card .actions { display: flex; gap: 8px; margin-top: 12px; }
+  .card .actions > * {
+    flex: 1; padding: 10px; border: 0; border-radius: 8px;
+    background: var(--accent); color: var(--on-accent);
+    font: inherit; font-weight: 600;
+    text-align: center; text-decoration: none; cursor: pointer;
+  }
+  .card .actions a.alt { background: var(--bg-active); color: var(--text); }
+
+  @media (min-width: 768px) {
+    .leaflet-control-zoom { display: block; }
+    .top { right: auto; width: 364px; padding: 12px 12px 0; }
+    .panel {
+      left: 12px; right: auto; top: 112px; bottom: 12px;
+      width: 340px; max-height: none; border-radius: 12px;
+    }
+    .panel.collapsed { bottom: auto; }
+    body.routing .panel { top: 204px; }
+    .info {
+      left: auto; top: 12px; right: 12px; bottom: auto;
+      width: 340px; padding: 16px; border-radius: 12px;
+      transform: translateX(calc(100% + 24px));
+    }
+  }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="top">
+  <input id="search" type="search" placeholder="Дәріхана немесе көше атауы" autocomplete="off">
+  <div class="chips">
+    <button class="chip" id="chip247">Тәулік бойы</button>
+    <button class="chip" id="chipNear">Маған жақын</button>
+  </div>
+  <div class="route" id="route" hidden>
+    <div class="route-name" id="routeName"></div>
+    <div class="route-meta" id="routeMeta"></div>
+    <div class="route-actions">
+      <button id="modeFoot">Жаяу</button>
+      <button id="modeCar">Көлікпен</button>
+      <a id="routeNav" target="_blank" rel="noopener">Навигатор</a>
+      <button id="routeClose" aria-label="Жолды жабу">✕</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="panel">
+  <button class="panel-head" id="panelHead">
+    <span id="count"></span><span class="arrow">▾</span>
+  </button>
+  <div class="status" id="status"></div>
+  <div class="list" id="list"></div>
+  <div class="credit">Дерек: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a></div>
+</div>
+
+<aside class="info" id="info">
+  <button class="info-close" id="infoClose" aria-label="Жабу">✕</button>
+  <div id="infoCard"></div>
+</aside>
+
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="data.js"></script>
+<script>
+// Telegram ішінде ашылса — толық экранға жаю. Жай браузерде ештеңе істемейді.
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg && tg.initData) {
+  tg.ready();
+  tg.expand();
+  // Картаны төмен сүйрегенде қосымша жабылып қалмауы үшін
+  if (tg.isVersionAtLeast("7.7")) tg.disableVerticalSwipes();
+}
+
+const ASTANA = [51.128, 71.43];
+const ROUTER = "https://routing.openstreetmap.de";
+const state = { query: "", only247: false, userPos: null };
+const route = { place: null, mode: "foot", line: null, request: 0 };
+
+const map = L.map("map", { preferCanvas: true, zoomControl: false }).setView(ASTANA, 12);
+L.control.zoom({ position: "bottomright" }).addTo(map);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+}).addTo(map);
+
+const layer = L.layerGroup().addTo(map);
+const markers = new Map();
+let userMarker = null;
+let locating = null;
+
+const $ = (id) => document.getElementById(id);
+const is247 = (p) => p.hours.replace(/\s/g, "") === "24/7";
+
+const DAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+const DAYS_KK = ["Дс", "Сс", "Ср", "Бс", "Жм", "Сб", "Жс"];
+
+// OSM opening_hours жолын ережелерге бөледі: [{ days: [7 × bool], times: [[басы, соңы] минутпен] }].
+// Түсінбеген форматқа null қайтарады — ондайда мәтін сол күйінде көрсетіледі.
+function parseHours(text) {
+  const rules = [];
+  for (const part of text.split(";")) {
+    const m = part.trim().match(/^([A-Za-z,\- ]*?)\s*(\d.*)$/);
+    if (!m) return null;
+
+    const days = Array(7).fill(!m[1]);
+    for (const token of m[1].split(",").map((t) => t.trim()).filter(Boolean)) {
+      if (token === "PH") continue;
+      const [from, to = from] = token.split("-").map((d) => DAYS.indexOf(d.trim()));
+      if (from < 0 || to < 0) return null;
+      for (let i = from; ; i = (i + 1) % 7) { days[i] = true; if (i === to) break; }
+    }
+
+    const times = [];
+    for (const range of m[2].split(",")) {
+      const t = range.replace(/\s/g, "").match(/^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/);
+      if (!t) return null;
+      const start = t[1] * 60 + +t[2];
+      let end = t[3] * 60 + +t[4];
+      if (end <= start) end += 1440; // түн ортасынан асады
+      times.push([start, end]);
+    }
+    rules.push({ days, times });
+  }
+  return rules;
+}
+
+function formatTime(min) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(Math.floor(min / 60) % 24)}:${pad(min % 60)}`;
+}
+
+function daysText(days) {
+  if (days.every(Boolean)) return "Күн сайын";
+  const runs = [];
+  for (let i = 0; i < 7; i++) {
+    if (!days[i]) continue;
+    let j = i;
+    while (j < 6 && days[j + 1]) j++;
+    runs.push(i === j ? DAYS_KK[i] : `${DAYS_KK[i]}–${DAYS_KK[j]}`);
+    i = j;
+  }
+  return runs.join(", ");
+}
+
+function scheduleText(p) {
+  if (is247(p)) return "Тәулік бойы";
+  if (!p.rules) return p.hours || "Жұмыс уақыты белгісіз";
+  return p.rules.map((r) =>
+    `${daysText(r.days)} ${r.times.map(([a, b]) => `${formatTime(a)}–${formatTime(b)}`).join(", ")}`
+  ).join("; ");
+}
+
+// Дәл қазір ашық па (Астана уақыты, UTC+5). Кесте белгісіз болса — null.
+function isOpen(p) {
+  if (is247(p)) return true;
+  if (!p.rules) return null;
+  const now = new Date(Date.now() + 5 * 3600e3);
+  const day = (now.getUTCDay() + 6) % 7;
+  const t = now.getUTCHours() * 60 + now.getUTCMinutes();
+  // Бір күнге бірнеше ереже сәйкес келсе, соңғысы күшінде
+  const timesFor = (d) => (p.rules.findLast((r) => r.days[d]) || { times: [] }).times;
+  return timesFor(day).some(([a, b]) => t >= a && t < b) ||
+    timesFor((day + 6) % 7).some(([a, b]) => t + 1440 >= a && t + 1440 < b);
+}
+
+// Жұмыс уақыты жолы: мәтіні мен түс класы
+function hoursLine(p) {
+  const text = scheduleText(p);
+  if (is247(p)) return { text, cls: "open" };
+  const open = isOpen(p);
+  if (open === null) return { text, cls: "" };
+  return { text: `${open ? "Қазір ашық" : "Қазір жабық"} · ${text}`, cls: open ? "open" : "closed" };
+}
+
+for (const p of PLACES) p.rules = parseHours(p.hours);
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text) node.textContent = text;
+  return node;
+}
+
+// Екі нүкте арасындағы қашықтық, метрмен (haversine)
+function distance(a, b) {
+  const rad = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * rad;
+  const dLon = (b[1] - a[1]) * rad;
+  const h = Math.sin(dLat / 2) ** 2 +
+    Math.cos(a[0] * rad) * Math.cos(b[0] * rad) * Math.sin(dLon / 2) ** 2;
+  return 6371000 * 2 * Math.asin(Math.sqrt(h));
+}
+
+function formatDistance(m) {
+  return m < 1000 ? `${Math.round(m / 10) * 10} м` : `${(m / 1000).toFixed(1)} км`;
+}
+
+function formatDuration(s) {
+  const min = Math.max(1, Math.round(s / 60));
+  return min < 60 ? `${min} мин` : `${Math.floor(min / 60)} сағ ${min % 60} мин`;
+}
+
+function card(p) {
+  const root = el("div", "card");
+  root.append(el("h3", "", p.name));
+  if (p.address) root.append(el("p", "", p.address));
+  const hours = hoursLine(p);
+  root.append(el("p", hours.cls, hours.text));
+  if (p.phone) root.append(el("p", "", p.phone.split(";")[0].trim()));
+
+  const actions = el("div", "actions");
+  const go = el("button", "", "Жол салу");
+  go.addEventListener("click", () => startRoute(p));
+  actions.append(go);
+
+  const phone = p.phone.split(";")[0].trim();
+  if (phone) {
+    const call = el("a", "alt", "Қоңырау шалу");
+    call.href = `tel:${phone.replace(/[^\d+]/g, "")}`;
+    actions.append(call);
+  }
+  root.append(actions);
+  return root;
+}
+
+// Таңдалған дәріхананың атауы картада нүктенің астында тұрады
+const label = L.tooltip({ permanent: true, direction: "bottom", offset: [0, 8], className: "place-label" });
+
+let selected = null;
+
+function showLabel(p) {
+  label.setLatLng([p.lat, p.lon]).setContent(el("span", "", p.name)).addTo(map);
+}
+
+for (const p of PLACES) {
+  const marker = L.circleMarker([p.lat, p.lon], {
+    radius: 7, weight: 2, color: "#fff", fillOpacity: 1,
+    fillColor: is247(p) ? "#16a34a" : "#2563eb",
+  }).on("click", () => selectPlace(p));
+  markers.set(p.id, marker);
+}
+
+function visiblePlaces() {
+  const q = state.query.trim().toLowerCase();
+  let result = PLACES.filter((p) =>
+    (!state.only247 || is247(p)) &&
+    (!q || p.name.toLowerCase().includes(q) || p.address.toLowerCase().includes(q)));
+
+  if (state.userPos) {
+    result = result
+      .map((p) => ({ ...p, dist: distance(state.userPos, [p.lat, p.lon]) }))
+      .sort((a, b) => a.dist - b.dist);
+  }
+  return result;
+}
+
+// Дәріхананы таңдау: ақпарат панелін ашып, картада атауын көрсетеді
+function selectPlace(p) {
+  selected = p;
+  if (window.innerWidth < 768) $("panel").classList.add("collapsed");
+  $("infoCard").replaceChildren(card(p));
+  $("info").classList.add("show");
+  showLabel(p);
+}
+
+function closeInfo() {
+  selected = null;
+  $("info").classList.remove("show");
+  if (route.place) showLabel(route.place); else label.remove();
+}
+
+function focusPlace(p) {
+  map.setView([p.lat, p.lon], 17);
+  selectPlace(p);
+}
+
+function render() {
+  const places = visiblePlaces();
+
+  layer.clearLayers();
+  for (const p of places) layer.addLayer(markers.get(p.id));
+
+  $("count").textContent = `${places.length} дәріхана`;
+
+  const list = $("list");
+  list.replaceChildren();
+  if (!places.length) {
+    list.append(el("div", "empty", "Ештеңе табылмады"));
+    return;
+  }
+  for (const p of places) {
+    const item = el("button", "item");
+    const row = el("div", "row");
+    row.append(el("span", "name", p.name));
+    if (p.dist != null) row.append(el("span", "dist", formatDistance(p.dist)));
+    item.append(row);
+    if (p.address) item.append(el("div", "sub", p.address));
+    const hours = hoursLine(p);
+    item.append(el("div", `sub ${hours.cls}`, hours.text));
+    item.addEventListener("click", () => focusPlace(p));
+    list.append(item);
+  }
+}
+
+$("search").addEventListener("input", (e) => {
+  state.query = e.target.value;
+  $("panel").classList.remove("collapsed");
+  render();
+});
+
+$("chip247").addEventListener("click", (e) => {
+  state.only247 = !state.only247;
+  e.currentTarget.classList.toggle("on", state.only247);
+  render();
+});
+
+// Пайдаланушының орнын анықтайды; сәтсіз болса себебін көрсетіп, reject етеді
+function locate() {
+  if (state.userPos) return Promise.resolve(state.userPos);
+  if (locating) return locating;
+  locating = new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      $("status").textContent = "Бұл браузер орналасқан жерді анықтай алмайды.";
+      reject();
+      return;
+    }
+    $("status").textContent = "Орналасқан жеріңіз анықталуда…";
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        state.userPos = [pos.coords.latitude, pos.coords.longitude];
+        $("chipNear").classList.add("on");
+        $("status").textContent = "Жақыннан алысқа қарай сұрыпталды.";
+        userMarker = L.circleMarker(state.userPos, {
+          radius: 8, weight: 3, color: "#fff", fillColor: "#ef4444", fillOpacity: 1,
+        }).addTo(map).bindPopup("Сіз осындасыз");
+        render();
+        resolve(state.userPos);
+      },
+      () => {
+        $("status").textContent = "Орналасқан жерді анықтау мүмкін болмады. Рұқсат берілгенін тексеріңіз.";
+        reject();
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  }).finally(() => { locating = null; });
+  return locating;
+}
+
+$("chipNear").addEventListener("click", () => {
+  if (state.userPos) {
+    clearRoute();
+    state.userPos = null;
+    $("chipNear").classList.remove("on");
+    if (userMarker) { userMarker.remove(); userMarker = null; }
+    $("status").textContent = "";
+    render();
+    return;
+  }
+  locate().then((pos) => map.setView(pos, 14), () => {});
+});
+
+function clearRoute() {
+  route.request++;
+  route.place = null;
+  if (route.line) { route.line.remove(); route.line = null; }
+  if (selected) showLabel(selected); else label.remove();
+  $("route").hidden = true;
+  document.body.classList.remove("routing");
+}
+
+// Тұрған жерден дәріханаға дейінгі жолды есептеп, картаға сызады
+async function startRoute(p) {
+  const request = ++route.request;
+  route.place = p;
+  if (window.innerWidth < 768) closeInfo();
+  showLabel(p);
+  if (route.line) { route.line.remove(); route.line = null; }
+
+  $("routeName").textContent = p.name;
+  $("routeMeta").textContent = "Жол есептелуде…";
+  $("modeFoot").classList.toggle("on", route.mode === "foot");
+  $("modeCar").classList.toggle("on", route.mode === "car");
+  $("routeNav").href = "https://www.google.com/maps/dir/?api=1" +
+    `&destination=${p.lat},${p.lon}&travelmode=${route.mode === "foot" ? "walking" : "driving"}`;
+  $("route").hidden = false;
+  document.body.classList.add("routing");
+
+  try {
+    const [lat, lon] = await locate();
+    const res = await fetch(`${ROUTER}/routed-${route.mode}/route/v1/driving/` +
+      `${lon},${lat};${p.lon},${p.lat}?overview=full&geometries=geojson`);
+    const data = await res.json();
+    if (request !== route.request) return;
+    if (data.code !== "Ok") throw new Error(data.code);
+
+    const best = data.routes[0];
+    route.line = L.geoJSON(best.geometry, {
+      style: { color: "#2563eb", weight: 5, opacity: .8 },
+    }).addTo(map);
+    $("routeMeta").textContent = `${formatDistance(best.distance)} · ${formatDuration(best.duration)}`;
+
+    const wide = window.innerWidth >= 768;
+    if (!wide) $("panel").classList.add("collapsed");
+    map.fitBounds(route.line.getBounds(), {
+      paddingTopLeft: wide ? [390, 30] : [30, 200],
+      paddingBottomRight: wide ? [selected ? 380 : 30, 30] : [30, 80],
+    });
+  } catch {
+    if (request !== route.request) return;
+    $("routeMeta").textContent = state.userPos
+      ? "Жолды есептеу мүмкін болмады. Интернетті тексеріп, қайталап көріңіз."
+      : "Жол салу үшін орналасқан жеріңізге рұқсат керек.";
+  }
+}
+
+function setMode(mode) {
+  if (route.mode === mode || !route.place) return;
+  route.mode = mode;
+  startRoute(route.place);
+}
+
+$("modeFoot").addEventListener("click", () => setMode("foot"));
+$("modeCar").addEventListener("click", () => setMode("car"));
+$("routeClose").addEventListener("click", clearRoute);
+$("infoClose").addEventListener("click", closeInfo);
+
+$("panelHead").addEventListener("click", () => $("panel").classList.toggle("collapsed"));
+
+render();
+</script>
+</body>
+</html>
