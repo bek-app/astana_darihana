@@ -64,7 +64,7 @@
   .route-actions { display: flex; gap: 6px; margin-top: 8px; }
   .route-actions > * {
     display: inline-flex; align-items: center;
-    height: 32px; padding: 0 12px;
+    height: 32px; padding: 0 10px;
     border: 0; border-radius: 16px;
     background: var(--bg-active); color: var(--text);
     font: inherit; font-size: 13px; text-decoration: none; cursor: pointer;
@@ -178,7 +178,8 @@
     <div class="route-actions">
       <button id="modeFoot">Жаяу</button>
       <button id="modeCar">Көлікпен</button>
-      <a id="routeNav" target="_blank" rel="noopener">Навигатор</a>
+      <a id="nav2gis" target="_blank" rel="noopener">2GIS</a>
+      <a id="navYandex" target="_blank" rel="noopener">Яндекс</a>
       <button id="routeClose" aria-label="Жолды жабу">✕</button>
     </div>
   </div>
@@ -554,13 +555,13 @@ async function startRoute(p) {
   $("routeMeta").textContent = "Жол есептелуде…";
   $("modeFoot").classList.toggle("on", route.mode === "foot");
   $("modeCar").classList.toggle("on", route.mode === "car");
-  $("routeNav").href = "https://www.google.com/maps/dir/?api=1" +
-    `&destination=${p.lat},${p.lon}&travelmode=${route.mode === "foot" ? "walking" : "driving"}`;
+  setNavLinks(p);
   $("route").hidden = false;
   document.body.classList.add("routing");
 
   try {
     const [lat, lon] = await locate();
+    setNavLinks(p);
     const res = await fetch(`${ROUTER}/routed-${route.mode}/route/v1/driving/` +
       `${lon},${lat};${p.lon},${p.lat}?overview=full&geometries=geojson`);
     const data = await res.json();
@@ -585,6 +586,25 @@ async function startRoute(p) {
       ? "Жолды есептеу мүмкін болмады. Интернетті тексеріп, қайталап көріңіз."
       : PICK_HINT;
   }
+}
+
+// Сыртқы навигаторлардың сілтемелері: кептеліс пен дауыспен бағыттау соларда
+function setNavLinks(p) {
+  const foot = route.mode === "foot";
+  const from = state.userPos;
+  $("nav2gis").href = `https://2gis.kz/routeSearch/rsType/${foot ? "pedestrian" : "car"}` +
+    (from ? `/from/${from[1]},${from[0]}` : "") + `/to/${p.lon},${p.lat}`;
+  $("navYandex").href = "https://yandex.kz/maps/?rtext=" +
+    `${from ? from.join(",") : ""}~${p.lat},${p.lon}&rtt=${foot ? "pd" : "auto"}`;
+}
+
+// Telegram ішінде сыртқы сілтемені оның өз әдісімен ашу сенімдірек
+for (const id of ["nav2gis", "navYandex"]) {
+  $(id).addEventListener("click", (e) => {
+    if (!(tg && tg.initData)) return;
+    e.preventDefault();
+    tg.openLink(e.currentTarget.href);
+  });
 }
 
 function setMode(mode) {
