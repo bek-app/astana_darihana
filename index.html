@@ -113,6 +113,32 @@
 
   .place-label { font-weight: 600; font-size: 13px; }
 
+  /* Навигация режимі: жоғарыда келесі бұрылыс, төменде қалған жол */
+  .nav-top, .nav-bottom { position: fixed; z-index: 1002; display: none; align-items: center; gap: 12px; box-shadow: var(--shadow); }
+  body.navigating .nav-top, body.navigating .nav-bottom { display: flex; }
+  body.navigating .top, body.navigating .panel, body.navigating .info { display: none; }
+  .nav-top {
+    top: calc(10px + env(safe-area-inset-top)); left: 10px; right: 10px;
+    padding: 12px 14px; border-radius: 14px;
+    background: var(--accent); color: var(--on-accent);
+  }
+  .nav-arrow { width: 40px; font-size: 34px; line-height: 1; text-align: center; }
+  .nav-dist { font-size: 20px; font-weight: 700; }
+  .nav-bottom {
+    left: 0; right: 0; bottom: 0;
+    justify-content: space-between;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    border-radius: 16px 16px 0 0;
+    background: var(--bg); color: var(--text);
+  }
+  .nav-remain { font-size: 18px; font-weight: 700; }
+  #navStop {
+    height: 40px; padding: 0 18px;
+    border: 0; border-radius: 20px;
+    background: var(--closed); color: #fff;
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
+
   /* Таңдалған дәріхана туралы панель: телефонда төменнен, кең экранда оң жақтан шығады */
   .info {
     position: fixed; z-index: 1001;
@@ -154,6 +180,8 @@
     }
     .panel.collapsed { bottom: auto; }
     body.routing .panel { top: 204px; }
+    .nav-top { top: 12px; left: 12px; right: auto; width: 364px; }
+    .nav-bottom { left: 12px; right: auto; bottom: 12px; width: 364px; border-radius: 12px; padding: 12px 16px; }
     .info {
       left: auto; top: 12px; right: 12px; bottom: auto;
       width: 340px; padding: 16px; border-radius: 12px;
@@ -178,8 +206,7 @@
     <div class="route-actions">
       <button id="modeFoot">Жаяу</button>
       <button id="modeCar">Көлікпен</button>
-      <a id="nav2gis" target="_blank" rel="noopener">2GIS</a>
-      <a id="navYandex" target="_blank" rel="noopener">Яндекс</a>
+      <button id="navStart" class="on">▶ Бастау</button>
       <button id="routeClose" aria-label="Жолды жабу">✕</button>
     </div>
   </div>
@@ -192,6 +219,21 @@
   <div class="status" id="status"></div>
   <div class="list" id="list"></div>
   <div class="credit">Дерек: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a></div>
+</div>
+
+<div class="nav-top">
+  <span class="nav-arrow" id="navArrow"></span>
+  <div>
+    <div class="nav-dist" id="navDist"></div>
+    <div id="navText"></div>
+  </div>
+</div>
+<div class="nav-bottom">
+  <div>
+    <div class="nav-remain" id="navRemain"></div>
+    <div class="route-meta" id="navNote"></div>
+  </div>
+  <button id="navStop">Аяқтау</button>
 </div>
 
 <aside class="info" id="info">
@@ -215,7 +257,8 @@ if (tg && tg.initData) {
 const ASTANA = [51.128, 71.43];
 const ROUTER = "https://routing.openstreetmap.de";
 const state = { query: "", only247: false, userPos: null };
-const route = { place: null, mode: "foot", line: null, request: 0 };
+const route = { place: null, mode: "foot", line: null, request: 0, coords: [], cum: [], steps: [], duration: 0 };
+const nav = { active: false, watch: null, timer: null, lock: null, offCount: 0 };
 
 const map = L.map("map", { preferCanvas: true, zoomControl: false }).setView(ASTANA, 12);
 L.control.zoom({ position: "bottomright" }).addTo(map);
@@ -534,6 +577,7 @@ $("chipNear").addEventListener("click", () => {
 });
 
 function clearRoute() {
+  if (nav.active) stopNav();
   route.request++;
   picking = false;
   route.place = null;
@@ -550,20 +594,19 @@ async function startRoute(p) {
   if (window.innerWidth < 768) closeInfo();
   showLabel(p);
   if (route.line) { route.line.remove(); route.line = null; }
+  if (nav.active) $("navText").textContent = "Жол қайта есептелуде…";
 
   $("routeName").textContent = p.name;
   $("routeMeta").textContent = "Жол есептелуде…";
   $("modeFoot").classList.toggle("on", route.mode === "foot");
   $("modeCar").classList.toggle("on", route.mode === "car");
-  setNavLinks(p);
   $("route").hidden = false;
   document.body.classList.add("routing");
 
   try {
     const [lat, lon] = await locate();
-    setNavLinks(p);
     const res = await fetch(`${ROUTER}/routed-${route.mode}/route/v1/driving/` +
-      `${lon},${lat};${p.lon},${p.lat}?overview=full&geometries=geojson`);
+      `${lon},${lat};${p.lon},${p.lat}?overview=full&geometries=geojson&steps=true`);
     const data = await res.json();
     if (request !== route.request) return;
     if (data.code !== "Ok") throw new Error(data.code);
@@ -573,6 +616,8 @@ async function startRoute(p) {
       style: { color: "#2563eb", weight: 5, opacity: .8 },
     }).addTo(map);
     $("routeMeta").textContent = `${formatDistance(best.distance)} · ${formatDuration(best.duration)}`;
+    setGuidance(best);
+    if (nav.active) { updateNav(state.userPos); return; }
 
     const wide = window.innerWidth >= 768;
     if (!wide) $("panel").classList.add("collapsed");
@@ -582,30 +627,164 @@ async function startRoute(p) {
     });
   } catch {
     if (request !== route.request) return;
+    if (nav.active) $("navText").textContent = "Жолды есептеу мүмкін болмады.";
     $("routeMeta").textContent = state.userPos
       ? "Жолды есептеу мүмкін болмады. Интернетті тексеріп, қайталап көріңіз."
       : PICK_HINT;
   }
 }
 
-// Сыртқы навигаторлардың сілтемелері: кептеліс пен дауыспен бағыттау соларда
-function setNavLinks(p) {
-  const foot = route.mode === "foot";
-  const from = state.userPos;
-  $("nav2gis").href = `https://2gis.kz/routeSearch/rsType/${foot ? "pedestrian" : "car"}` +
-    (from ? `/from/${from[1]},${from[0]}` : "") + `/to/${p.lon},${p.lat}`;
-  $("navYandex").href = "https://yandex.kz/maps/?rtext=" +
-    `${from ? from.join(",") : ""}~${p.lat},${p.lon}&rtt=${foot ? "pd" : "auto"}`;
+// ---- Навигация: жол бойымен жүргенде келесі бұрылысты көрсетіп отырады ----
+
+const TURNS = {
+  "left": ["←", "Солға бұрылыңыз"],
+  "right": ["→", "Оңға бұрылыңыз"],
+  "slight left": ["↖", "Сәл солға ұстаңыз"],
+  "slight right": ["↗", "Сәл оңға ұстаңыз"],
+  "sharp left": ["←", "Күрт солға бұрылыңыз"],
+  "sharp right": ["→", "Күрт оңға бұрылыңыз"],
+  "straight": ["↑", "Тура жүріңіз"],
+  "uturn": ["↩", "Кері бұрылыңыз"],
+};
+
+// Бір қадамның (OSRM step) көрсеткісі мен мәтіні
+function stepInfo(step) {
+  const { type, modifier, exit } = step.maneuver;
+  if (type === "arrive") return ["●", "Межелі жер"];
+  let [arrow, text] = TURNS[modifier] || TURNS.straight;
+  if (type === "roundabout" || type === "rotary") {
+    arrow = "⟳";
+    text = exit ? `Айналма жол: ${exit}-шығыс` : "Айналма жолға кіріңіз";
+  }
+  return [arrow, step.name ? `${text} · ${step.name}` : text];
 }
 
-// Telegram ішінде сыртқы сілтемені оның өз әдісімен ашу сенімдірек
-for (const id of ["nav2gis", "navYandex"]) {
-  $(id).addEventListener("click", (e) => {
-    if (!(tg && tg.initData)) return;
-    e.preventDefault();
-    tg.openLink(e.currentTarget.href);
+// Жол сызығын және қадамдарды навигацияға ыңғайлы түрде сақтайды
+function setGuidance(best) {
+  route.coords = best.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+  route.cum = [0];
+  for (let i = 1; i < route.coords.length; i++) {
+    route.cum.push(route.cum[i - 1] + distance(route.coords[i - 1], route.coords[i]));
+  }
+  route.duration = best.duration;
+  let start = 0;
+  route.steps = best.legs[0].steps.map((step) => {
+    const [arrow, text] = stepInfo(step);
+    const item = { start, arrow, text };
+    start += step.distance;
+    return item;
   });
 }
+
+// Нүктенің жол сызығына ең жақын жері: жол басынан қашықтығы (along) және жолдан ауытқуы (off), метрмен
+function progressOn(pos) {
+  const kx = 111320 * Math.cos(pos[0] * Math.PI / 180);
+  const ky = 110540;
+  let best = { along: 0, off: Infinity };
+  for (let i = 1; i < route.coords.length; i++) {
+    const a = route.coords[i - 1], b = route.coords[i];
+    const bx = (b[1] - a[1]) * kx, by = (b[0] - a[0]) * ky;
+    const px = (pos[1] - a[1]) * kx, py = (pos[0] - a[0]) * ky;
+    const len2 = bx * bx + by * by;
+    const t = len2 ? Math.max(0, Math.min(1, (px * bx + py * by) / len2)) : 0;
+    const off = Math.hypot(px - bx * t, py - by * t);
+    if (off < best.off) best = { along: route.cum[i - 1] + (route.cum[i] - route.cum[i - 1]) * t, off };
+  }
+  return best;
+}
+
+function stopTracking() {
+  if (nav.watch != null) { navigator.geolocation.clearWatch(nav.watch); nav.watch = null; }
+  if (nav.timer != null) { clearInterval(nav.timer); nav.timer = null; }
+}
+
+// Жаңа координата келген сайын шақырылады
+function updateNav(pos) {
+  state.userPos = pos;
+  if (userMarker) userMarker.setLatLng(pos);
+  if (!nav.active || !route.line) return;
+  map.panTo(pos);
+
+  const total = route.cum[route.cum.length - 1];
+  const { along, off } = progressOn(pos);
+  const remaining = total - along;
+
+  if (off <= 60) {
+    nav.offCount = 0;
+  } else if (++nav.offCount >= 3) {
+    // Жолдан шығып кетті — осы жерден қайта есептейміз
+    nav.offCount = 0;
+    startRoute(route.place);
+    return;
+  }
+
+  if (remaining < 25 && off <= 60) {
+    stopTracking();
+    $("navArrow").textContent = "●";
+    $("navDist").textContent = "Жеттіңіз";
+    $("navText").textContent = route.place.name;
+    $("navRemain").textContent = "";
+    return;
+  }
+
+  const next = route.steps.find((step) => step.start > along + 5) || route.steps[route.steps.length - 1];
+  $("navArrow").textContent = next.arrow;
+  $("navDist").textContent = formatDistance(Math.max(0, next.start - along));
+  $("navText").textContent = next.text;
+  $("navRemain").textContent =
+    `${formatDistance(remaining)} · ${formatDuration(total ? route.duration * remaining / total : 0)}`;
+}
+
+// Орынды Telegram арқылы қайта-қайта сұрау: браузердің үздіксіз бақылауы істемегенде
+function startPolling() {
+  if (nav.timer != null) return;
+  const poll = () => requestPosition().then(updateNav, () => {
+    $("navNote").textContent = "Орныңыз бақыланбай тұр — нұсқаулар жаңармайды.";
+  });
+  poll();
+  nav.timer = setInterval(poll, 4000);
+}
+
+function startNav() {
+  if (!route.line || !state.userPos) return;
+  nav.active = true;
+  nav.offCount = 0;
+  document.body.classList.add("navigating");
+  $("navNote").textContent = route.place.name;
+  map.setView(state.userPos, 17);
+  updateNav(state.userPos);
+
+  if (navigator.geolocation) {
+    nav.watch = navigator.geolocation.watchPosition(
+      (pos) => {
+        $("navNote").textContent = route.place.name;
+        updateNav([pos.coords.latitude, pos.coords.longitude]);
+      },
+      startPolling,
+      { enableHighAccuracy: true, maximumAge: 2000 }
+    );
+  } else {
+    startPolling();
+  }
+  // Жол үстінде экран өшіп қалмасын
+  if (navigator.wakeLock) {
+    navigator.wakeLock.request("screen").then((lock) => {
+      if (nav.active) nav.lock = lock; else lock.release();
+    }, () => {});
+  }
+}
+
+function stopNav() {
+  nav.active = false;
+  stopTracking();
+  if (nav.lock) { nav.lock.release(); nav.lock = null; }
+  document.body.classList.remove("navigating");
+  render();
+  if (route.line) map.fitBounds(route.line.getBounds(), { padding: [40, 40] });
+}
+
+$("navStart").addEventListener("click", startNav);
+$("navStop").addEventListener("click", stopNav);
 
 function setMode(mode) {
   if (route.mode === mode || !route.place) return;
