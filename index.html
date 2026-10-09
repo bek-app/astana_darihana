@@ -227,6 +227,7 @@ const layer = L.layerGroup().addTo(map);
 const markers = new Map();
 let userMarker = null;
 let locating = null;
+let picking = false;
 
 const $ = (id) => document.getElementById(id);
 const is247 = (p) => p.hours.replace(/\s/g, "") === "24/7";
@@ -376,7 +377,10 @@ for (const p of PLACES) {
   const marker = L.circleMarker([p.lat, p.lon], {
     radius: 7, weight: 2, color: "#fff", fillOpacity: 1,
     fillColor: is247(p) ? "#16a34a" : "#2563eb",
-  }).on("click", () => selectPlace(p));
+  }).on("click", (e) => {
+    L.DomEvent.stopPropagation(e); // картаның өз click өңдегішіне жетпесін
+    selectPlace(p);
+  });
   markers.set(p.id, marker);
 }
 
@@ -454,42 +458,71 @@ $("chip247").addEventListener("click", (e) => {
   render();
 });
 
-// Пайдаланушының орнын анықтайды; сәтсіз болса себебін көрсетіп, reject етеді
+const PICK_HINT = "Орныңыз анықталмады. Картадан тұрған жеріңізді басып көрсетіңіз.";
+
+// Құрылғыдан координата сұрайды: Telegram ішінде оның өз API-і, болмаса браузердікі
+function requestPosition() {
+  const viaBrowser = () => new Promise((resolve, reject) => {
+    if (!navigator.geolocation) { reject(); return; }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve([pos.coords.latitude, pos.coords.longitude]),
+      reject,
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  });
+
+  const manager = tg && tg.initData && tg.isVersionAtLeast("8.0") && tg.LocationManager;
+  if (!manager) return viaBrowser();
+
+  return new Promise((resolve, reject) => {
+    const ask = () => {
+      if (!manager.isLocationAvailable) { reject(); return; }
+      manager.getLocation((data) => (data ? resolve([data.latitude, data.longitude]) : reject()));
+    };
+    if (manager.isInited) ask(); else manager.init(ask);
+  }).catch(viaBrowser);
+}
+
+function setUserPos(pos) {
+  picking = false;
+  state.userPos = pos;
+  $("chipNear").classList.add("on");
+  $("status").textContent = "Жақыннан алысқа қарай сұрыпталды.";
+  if (userMarker) userMarker.remove();
+  userMarker = L.circleMarker(pos, {
+    radius: 8, weight: 3, color: "#fff", fillColor: "#ef4444", fillOpacity: 1,
+  }).addTo(map).bindPopup("Сіз осындасыз");
+  render();
+}
+
+// Пайдаланушының орнын анықтайды; сәтсіз болса картадан қолмен көрсетуді ұсынып, reject етеді
 function locate() {
   if (state.userPos) return Promise.resolve(state.userPos);
   if (locating) return locating;
-  locating = new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      $("status").textContent = "Бұл браузер орналасқан жерді анықтай алмайды.";
-      reject();
-      return;
+  $("status").textContent = "Орналасқан жеріңіз анықталуда…";
+  locating = requestPosition().then(
+    (pos) => { setUserPos(pos); return pos; },
+    () => {
+      picking = true;
+      $("status").textContent = PICK_HINT;
+      throw new Error("no position");
     }
-    $("status").textContent = "Орналасқан жеріңіз анықталуда…";
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        state.userPos = [pos.coords.latitude, pos.coords.longitude];
-        $("chipNear").classList.add("on");
-        $("status").textContent = "Жақыннан алысқа қарай сұрыпталды.";
-        userMarker = L.circleMarker(state.userPos, {
-          radius: 8, weight: 3, color: "#fff", fillColor: "#ef4444", fillOpacity: 1,
-        }).addTo(map).bindPopup("Сіз осындасыз");
-        render();
-        resolve(state.userPos);
-      },
-      () => {
-        $("status").textContent = "Орналасқан жерді анықтау мүмкін болмады. Рұқсат берілгенін тексеріңіз.";
-        reject();
-      },
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
-  }).finally(() => { locating = null; });
+  ).finally(() => { locating = null; });
   return locating;
 }
+
+// Геолокация істемесе, пайдаланушы картаны басып орнын өзі көрсетеді
+map.on("click", (e) => {
+  if (!picking) return;
+  setUserPos([e.latlng.lat, e.latlng.lng]);
+  if (route.place) startRoute(route.place);
+});
 
 $("chipNear").addEventListener("click", () => {
   if (state.userPos) {
     clearRoute();
     state.userPos = null;
+    picking = false;
     $("chipNear").classList.remove("on");
     if (userMarker) { userMarker.remove(); userMarker = null; }
     $("status").textContent = "";
@@ -501,6 +534,7 @@ $("chipNear").addEventListener("click", () => {
 
 function clearRoute() {
   route.request++;
+  picking = false;
   route.place = null;
   if (route.line) { route.line.remove(); route.line = null; }
   if (selected) showLabel(selected); else label.remove();
@@ -549,7 +583,7 @@ async function startRoute(p) {
     if (request !== route.request) return;
     $("routeMeta").textContent = state.userPos
       ? "Жолды есептеу мүмкін болмады. Интернетті тексеріп, қайталап көріңіз."
-      : "Жол салу үшін орналасқан жеріңізге рұқсат керек.";
+      : PICK_HINT;
   }
 }
 
